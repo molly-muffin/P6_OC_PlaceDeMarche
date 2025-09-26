@@ -18,17 +18,19 @@ Ce projet a été réalisé dans le cadre du parcours AI Engineer d'OpenClassroo
     Librairies : 
     - numpy
     - pandas
-    - scikit
-    - nltk
-    - spacy
+    - scikit-learn
     - matplotlib
     - seaborn
-    - jupyter
-    - notebook
-    - wordcloud
-    - gensim
-    - transformers
-    - torch
+    - nltk
+    - pillow
+    - opencv-python (cv2)
+    - tensorflow  (ou tensorflow-macos + tensorflow-metal sur Apple Silicon)
+    - gensim (optionnel)
+    - sentence-transformers (optionnel)
+    - umap-learn (optionnel)
+    - fastapi
+    - uvicorn
+    - requests
 
 `Jupyter notebook`
 
