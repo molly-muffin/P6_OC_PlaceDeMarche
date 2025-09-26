@@ -9,8 +9,8 @@ Ce projet a été réalisé dans le cadre du parcours AI Engineer d'OpenClassroo
 
 ## Le projet inclu :
 - un notebook contenant :
-    1. l'EDA complète, features texte/image, projections 2D, clustering + interprétations
-    2. le transfer learning (MobileNetV2), split stratifié, entraînement/fine‑tuning, métriques, export artefacts
+    - l'EDA complète, features texte/image, projections 2D, clustering + interprétations
+    - le transfer learning (MobileNetV2), split stratifié, entraînement/fine‑tuning, métriques, export artefacts
 - un script Python pour l'API FastAPI + CLI (prédiction image, batch → `predictions.csv`)
 - un diaporama contenant la présentation visuelle de l'analyse des données
 
