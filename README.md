@@ -1,4 +1,6 @@
-![Projet P6](https://user.oc-static.com/upload/2019/02/24/15510259240381_Projet%20textimage%20logo.png)
+<p align="center">
+  <img src="https://user.oc-static.com/upload/2019/02/24/15510259240381_Projet%20textimage%20logo.png" alt="Projet P6" />
+</p>
 
 # Classification automatique des biens de consommation (Texte & Image)
 
