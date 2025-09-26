@@ -5,3 +5,5 @@ data/
 p6_env_py310/
 predictions.csv
 Weather*
+.gitignore
+.DS_Store
