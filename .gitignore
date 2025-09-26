@@ -1,0 +1,7 @@
+notebooks/.ipynb_checkpoints/
+help/
+old/
+data/
+p6_env_py310/
+predictions.csv
+Weather*

@@ -51,8 +51,6 @@ python -m pip install fastapi uvicorn pillow numpy pandas scikit-learn tensorflo
 ## Exécuter les notebooks
 1. Ouvrir Jupyter/Lab et exécuter `notebooks/Laureen_Dademeule_1_notebook_pretraitement_feature_extraction_faisabilite_092025.ipynb` (EDA, features, clustering)
 2. Exécuter `notebooks/Laureen_Dademeule_2_notebook_classification_092025.ipynb` pour entraîner et exporter les artefacts:
-   - `data/artifacts/mobilenet_classifier.keras`
-   - `data/artifacts/label_mapping.json`
 
 ## Lancer l’API
 Depuis la racine du projet (après avoir généré les artefacts ci‑dessus):
@@ -82,5 +80,6 @@ python Laureen_Dademeule_3_script_Python_092025.py predict --image /ABSOLUTE/PAT
 python Laureen_Dademeule_3_script_Python_092025.py predict-sample --num 50
 # → predictions.csv
 ```
+
 > Laureenda Demeule
 > OpenClassroom
