@@ -61,8 +61,21 @@ def load_model_and_labels() -> Tuple[tf.keras.Model, Dict]:
         raise FileNotFoundError(f"Label mapping not found at {LABELS_PATH}.")
     model = tf.keras.models.load_model(MODEL_PATH)
     with open(LABELS_PATH, 'r') as f:
-        label_info = json.load(f)
-    classes = label_info.get('classes')
+        label_mapping = json.load(f)
+    
+    # Adapter le format : soit {"0": "classe1", "1": "classe2"} soit {"classes": [...]}
+    if isinstance(label_mapping, dict):
+        if 'classes' in label_mapping:
+            # Format avec clé 'classes'
+            classes = label_mapping['classes']
+            label_info = label_mapping
+        else:
+            # Format direct index → classe (votre cas actuel)
+            classes = [label_mapping[str(i)] for i in range(len(label_mapping))]
+            label_info = {'classes': classes, 'mapping': label_mapping}
+    else:
+        raise ValueError('Invalid label mapping format')
+    
     if not classes:
         raise ValueError('Invalid label mapping: missing classes')
     return model, label_info
