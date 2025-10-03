@@ -60,7 +60,10 @@ MODEL_PATH = ARTIFACTS_DIR / 'deep_learning_p6_multimodal.keras'
 TFIDF_PATH = ARTIFACTS_DIR / 'tfidf_vectorizer.pkl'
 IMAGE_SCALER_PATH = ARTIFACTS_DIR / 'image_scaler.pkl'
 LABELS_PATH = ARTIFACTS_DIR / 'label_mapping.json'
-PREDICTIONS_CSV = PROJECT_ROOT / 'predictions.csv'
+
+# Predictions.csv dans le même dossier que le script
+SCRIPT_DIR = Path(__file__).parent.resolve()
+PREDICTIONS_CSV = SCRIPT_DIR / 'predictions.csv'
 
 # Modèle MobileNetV2 pour extraction de features
 MOBILENET_MODEL = None  # Chargé une seule fois
@@ -284,8 +287,25 @@ def cmd_predict_sample(num: int = 50, seed: int = 42) -> None:
         num: Nombre d'échantillons à prédire
         seed: Graine aléatoire pour reproductibilité
     """
+    import time
+    
     if not CSV_PATH.exists():
         raise FileNotFoundError(f"CSV not found at {CSV_PATH}")
+    
+    # Fonction helper pour extraire la vraie catégorie
+    def parse_true_category(cat_str: str) -> str:
+        """Extrait la catégorie principale depuis product_category_tree"""
+        if not isinstance(cat_str, str) or len(cat_str) == 0:
+            return 'Unknown'
+        try:
+            s = cat_str.strip()
+            if s.startswith('['):
+                s = s[1:-1]
+            s = s.strip().strip('"')
+            parts = [p.strip() for p in s.split('>>') if len(p.strip()) > 0]
+            return parts[0] if parts else 'Unknown'
+        except Exception:
+            return 'Unknown'
     
     # Chargement du dataset
     print(f'📊 Chargement du dataset depuis {CSV_PATH.name}...')
@@ -294,6 +314,7 @@ def cmd_predict_sample(num: int = 50, seed: int = 42) -> None:
     # Préparation des chemins d'images et textes
     df['image_path'] = df['image'].apply(lambda x: str(IMAGES_DIR / x) if isinstance(x, str) else None)
     df['text'] = (df['product_name'].fillna('') + ' ' + df['description'].fillna('')).astype(str)
+    df['true_category'] = df['product_category_tree'].apply(parse_true_category)
     
     # Filtrage des images existantes
     df = df[df['image_path'].apply(lambda p: isinstance(p, str) and os.path.exists(p))]
@@ -311,18 +332,32 @@ def cmd_predict_sample(num: int = 50, seed: int = 42) -> None:
     # Prédictions sur tous les échantillons
     print(f'🔮 Prédictions en cours...')
     rows = []
+    total_time = 0
+    
     for idx, row in df.iterrows():
         img_path = row['image_path']
         text = row['text']
+        true_category = row['true_category']
         
         try:
+            # Mesure du temps de prédiction
+            start_time = time.time()
             label, score = predict_multimodal(model, classes, text, img_path, tfidf_vec, img_scaler)
+            processing_time = time.time() - start_time
+            total_time += processing_time
+            
+            # Vérification de la prédiction
+            is_correct = (label == true_category)
+            
             rows.append({
                 'image_path': img_path,
                 'product_name': row.get('product_name', ''),
                 'description': row.get('description', '')[:100] + '...' if len(row.get('description', '')) > 100 else row.get('description', ''),
+                'true_category': true_category,
                 'predicted_label': label,
-                'confidence_score': round(score, 4)
+                'confidence_score': round(score, 4),
+                'is_correct': is_correct,
+                'processing_time_ms': round(processing_time * 1000, 2)  # en millisecondes
             })
         except Exception as e:
             print(f'⚠️ Erreur sur {img_path}: {e}')
@@ -337,10 +372,19 @@ def cmd_predict_sample(num: int = 50, seed: int = 42) -> None:
     out_df.to_csv(PREDICTIONS_CSV, index=False)
     print(f'✅ {len(out_df)} prédictions sauvegardées dans {PREDICTIONS_CSV}')
     
-    # Statistiques
-    print(f'\n📈 Distribution des prédictions:')
+    # Statistiques détaillées
+    print(f'\n📈 STATISTIQUES DES PRÉDICTIONS:')
+    print(f'   Nombre total: {len(out_df)}')
+    print(f'   Prédictions correctes: {out_df["is_correct"].sum()} ({out_df["is_correct"].mean()*100:.1f}%)')
+    print(f'   Prédictions incorrectes: {(~out_df["is_correct"]).sum()} ({(~out_df["is_correct"]).mean()*100:.1f}%)')
+    print(f'   Score de confiance moyen: {out_df["confidence_score"].mean():.4f}')
+    print(f'   Temps moyen par prédiction: {out_df["processing_time_ms"].mean():.2f} ms')
+    print(f'   Temps total: {total_time:.2f} secondes')
+    
+    print(f'\n📊 Distribution des prédictions:')
     for label, count in out_df['predicted_label'].value_counts().items():
-        print(f'  {label}: {count}')
+        accuracy = out_df[out_df['predicted_label'] == label]['is_correct'].mean() * 100
+        print(f'  {label}: {count} prédictions (accuracy: {accuracy:.1f}%)')
 
 
 def build_app() -> 'FastAPI':
@@ -507,5 +551,3 @@ Exemples d'utilisation:
 
 if __name__ == '__main__':
     main()
-
-
