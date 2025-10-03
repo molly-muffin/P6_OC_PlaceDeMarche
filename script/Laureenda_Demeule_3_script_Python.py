@@ -248,29 +248,74 @@ def predict_multimodal(model: tf.keras.Model, classes: list,
     return label, score
 
 
+def get_text_from_dataset(image_path: str) -> str:
+    """
+    Récupère le texte (nom + description) associé à une image depuis le dataset Flipkart.
+    
+    Args:
+        image_path: Chemin vers l'image
+    
+    Returns:
+        Texte combiné (product_name + description) ou None si non trouvé
+    """
+    try:
+        # Charger le dataset
+        if not CSV_PATH.exists():
+            return None
+        
+        df = pd.read_csv(CSV_PATH)
+        
+        # Extraire le nom du fichier depuis le chemin
+        image_filename = Path(image_path).name
+        
+        # Chercher la ligne correspondante dans le dataset
+        matching_row = df[df['image'] == image_filename]
+        
+        if len(matching_row) == 0:
+            return None
+        
+        # Extraire nom et description
+        product_name = matching_row['product_name'].iloc[0] if 'product_name' in matching_row else ''
+        description = matching_row['description'].iloc[0] if 'description' in matching_row else ''
+        
+        # Combiner
+        text = f"{product_name} {description}".strip()
+        
+        return text if text else None
+        
+    except Exception as e:
+        print(f'⚠️ Erreur lors de la récupération du texte: {e}')
+        return None
+
+
 def cmd_predict(image_path: str, text: str = None) -> None:
     """
     Prédiction CLI sur une image avec description optionnelle.
     
     Args:
         image_path: Chemin vers l'image
-        text: Description textuelle du produit (optionnel, sinon utilise le nom du fichier)
+        text: Description textuelle du produit (optionnel, cherche automatiquement dans le dataset)
     """
     # Chargement des modèles et préprocesseurs
     model, label_info, tfidf_vec, img_scaler = load_model_and_preprocessors()
     classes = label_info['classes']
     
-    # Si pas de texte fourni, utiliser le nom du fichier comme proxy
+    # Si pas de texte fourni, essayer de le récupérer du dataset
     if text is None:
-        text = Path(image_path).stem.replace('_', ' ').replace('-', ' ')
-        print(f'⚠️ Pas de description fournie, utilisation du nom de fichier: "{text}"')
+        text = get_text_from_dataset(image_path)
+        if text is None:
+            # Fallback : utiliser le nom du fichier
+            text = Path(image_path).stem.replace('_', ' ').replace('-', ' ')
+            print(f'⚠️ Image non trouvée dans le dataset, utilisation du nom de fichier: "{text}"')
+        else:
+            print(f'✅ Description récupérée du dataset Flipkart')
     
     # Prédiction multimodale
     label, score = predict_multimodal(model, classes, text, image_path, tfidf_vec, img_scaler)
     
     result = {
         'image_path': image_path,
-        'text_input': text,
+        'text_input': text[:100] + '...' if len(text) > 100 else text,
         'predicted_label': label,
         'confidence_score': round(score, 6),
         'model': 'Deep Learning Multimodal (94.4% accuracy)'
