@@ -11,7 +11,9 @@ Usage examples:
       python Laureen_Dademeule_3_script_Python_092025.py predict-sample --num 50
 
 Model artifacts created by the classification notebook:
-  - data/artifacts/mobilenet_classifier.keras
+  - data/artifacts/deep_learning_p6_multimodal.keras (Meilleur modèle: 94.4% accuracy)
+  - data/artifacts/tfidf_vectorizer.pkl
+  - data/artifacts/image_scaler.pkl
   - data/artifacts/label_mapping.json
 """
 
@@ -19,12 +21,15 @@ import argparse
 import io
 import json
 import os
+import pickle
 import random
 from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
+import pandas as pd
 from PIL import Image
+from sklearn.preprocessing import StandardScaler
 
 # Lazy imports for FastAPI/uvicorn to allow CLI without these deps
 try:
@@ -49,28 +54,67 @@ DATA_DIR = PROJECT_ROOT / 'data' / 'Flipkart'
 IMAGES_DIR = DATA_DIR / 'Images'
 CSV_PATH = DATA_DIR / 'flipkart_com-ecommerce_sample_1050.csv'
 ARTIFACTS_DIR = PROJECT_ROOT / 'data' / 'artifacts'
-MODEL_PATH = ARTIFACTS_DIR / 'mobilenet_classifier.keras'
+
+# Meilleur modèle: Deep Learning Multimodal (94.4% accuracy)
+MODEL_PATH = ARTIFACTS_DIR / 'deep_learning_p6_multimodal.keras'
+TFIDF_PATH = ARTIFACTS_DIR / 'tfidf_vectorizer.pkl'
+IMAGE_SCALER_PATH = ARTIFACTS_DIR / 'image_scaler.pkl'
 LABELS_PATH = ARTIFACTS_DIR / 'label_mapping.json'
 PREDICTIONS_CSV = PROJECT_ROOT / 'predictions.csv'
 
+# Modèle MobileNetV2 pour extraction de features
+MOBILENET_MODEL = None  # Chargé une seule fois
 
-def load_model_and_labels() -> Tuple[tf.keras.Model, Dict]:
+
+def load_mobilenet_base():
+    """Charge le modèle MobileNetV2 pour extraction de features (une seule fois)"""
+    global MOBILENET_MODEL
+    if MOBILENET_MODEL is None:
+        from tensorflow.keras.applications import MobileNetV2
+        MOBILENET_MODEL = MobileNetV2(
+            weights='imagenet',
+            include_top=False,
+            pooling='avg',
+            input_shape=(224, 224, 3)
+        )
+        print('✅ MobileNetV2 chargé pour extraction de features')
+    return MOBILENET_MODEL
+
+
+def load_model_and_preprocessors() -> Tuple[tf.keras.Model, Dict, object, object]:
+    """
+    Charge le modèle multimodal et tous les préprocesseurs nécessaires.
+    
+    Returns:
+        model: Modèle Deep Learning Multimodal (94.4% accuracy)
+        label_info: Informations sur les classes
+        tfidf_vectorizer: Vectoriseur TF-IDF pour le texte
+        image_scaler: StandardScaler pour les features image
+    """
+    # Vérification des fichiers
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Model not found at {MODEL_PATH}. Train and export it first.")
     if not LABELS_PATH.exists():
         raise FileNotFoundError(f"Label mapping not found at {LABELS_PATH}.")
+    if not TFIDF_PATH.exists():
+        raise FileNotFoundError(f"TF-IDF vectorizer not found at {TFIDF_PATH}.")
+    if not IMAGE_SCALER_PATH.exists():
+        raise FileNotFoundError(f"Image scaler not found at {IMAGE_SCALER_PATH}.")
+    
+    # Chargement du modèle multimodal
+    print(f'📦 Chargement du modèle multimodal depuis {MODEL_PATH.name}...')
     model = tf.keras.models.load_model(MODEL_PATH)
+    
+    # Chargement des labels
     with open(LABELS_PATH, 'r') as f:
         label_mapping = json.load(f)
     
-    # Adapter le format : soit {"0": "classe1", "1": "classe2"} soit {"classes": [...]}
+    # Extraction des classes
     if isinstance(label_mapping, dict):
         if 'classes' in label_mapping:
-            # Format avec clé 'classes'
             classes = label_mapping['classes']
             label_info = label_mapping
         else:
-            # Format direct index → classe (votre cas actuel)
             classes = [label_mapping[str(i)] for i in range(len(label_mapping))]
             label_info = {'classes': classes, 'mapping': label_mapping}
     else:
@@ -78,65 +122,245 @@ def load_model_and_labels() -> Tuple[tf.keras.Model, Dict]:
     
     if not classes:
         raise ValueError('Invalid label mapping: missing classes')
-    return model, label_info
+    
+    # Chargement du vectoriseur TF-IDF
+    print(f'📦 Chargement du vectoriseur TF-IDF...')
+    with open(TFIDF_PATH, 'rb') as f:
+        tfidf_vectorizer = pickle.load(f)
+    
+    # Chargement du scaler image
+    print(f'📦 Chargement du scaler image...')
+    with open(IMAGE_SCALER_PATH, 'rb') as f:
+        image_scaler = pickle.load(f)
+    
+    print(f'✅ Modèle multimodal chargé avec succès ({len(classes)} classes)')
+    return model, label_info, tfidf_vectorizer, image_scaler
 
 
-def load_and_preprocess_image(image_bytes_or_path) -> np.ndarray:
+def extract_image_features(image_bytes_or_path, scaler) -> np.ndarray:
+    """
+    Extrait les features MobileNetV2 d'une image et applique la normalisation.
+    
+    Args:
+        image_bytes_or_path: Chemin ou bytes de l'image
+        scaler: StandardScaler pour normaliser les features
+    
+    Returns:
+        Features normalisées (1280 dimensions)
+    """
+    # Chargement et prétraitement de l'image
     if isinstance(image_bytes_or_path, (str, Path)):
         img = Image.open(image_bytes_or_path).convert('RGB').resize((224, 224))
     else:
         img = Image.open(io.BytesIO(image_bytes_or_path)).convert('RGB').resize((224, 224))
+    
+    # Conversion en array et prétraitement MobileNetV2
     arr = np.asarray(img).astype(np.float32)
     arr = mobilenet_preprocess(arr)
     arr = np.expand_dims(arr, axis=0)
-    return arr
+    
+    # Extraction des features avec MobileNetV2
+    mobilenet = load_mobilenet_base()
+    features = mobilenet.predict(arr, verbose=0)[0]
+    
+    # Normalisation avec le scaler entraîné
+    features_scaled = scaler.transform(features.reshape(1, -1))
+    
+    return features_scaled
 
 
-def predict_image(model: tf.keras.Model, classes: list, image_source) -> Tuple[str, float]:
-    x = load_and_preprocess_image(image_source)
-    preds = model.predict(x, verbose=0)[0]
+def clean_text(text: str) -> str:
+    """
+    Nettoie le texte (même pipeline que dans le notebook).
+    
+    Args:
+        text: Texte brut
+    
+    Returns:
+        Texte nettoyé (minuscules, sans stopwords, lemmatisé)
+    """
+    import re
+    try:
+        import nltk
+        from nltk.corpus import stopwords
+        from nltk.stem import WordNetLemmatizer
+        
+        # Télécharger les ressources si nécessaire
+        try:
+            stopwords.words('english')
+        except:
+            nltk.download('stopwords', quiet=True)
+            nltk.download('wordnet', quiet=True)
+            nltk.download('punkt', quiet=True)
+        
+        STOPWORDS = set(stopwords.words('english'))
+        LEMMATIZER = WordNetLemmatizer()
+        TOKENIZER_RE = re.compile(r"[A-Za-z]+")
+        
+        if not isinstance(text, str):
+            return ''
+        
+        text = text.lower()
+        tokens = TOKENIZER_RE.findall(text)
+        tokens = [LEMMATIZER.lemmatize(t) for t in tokens if t not in STOPWORDS and len(t) > 2]
+        return ' '.join(tokens)
+    except Exception as e:
+        print(f'⚠️ Erreur nettoyage texte: {e}')
+        return text.lower() if isinstance(text, str) else ''
+
+
+def predict_multimodal(model: tf.keras.Model, classes: list, 
+                       text: str, image_source,
+                       tfidf_vectorizer, image_scaler) -> Tuple[str, float]:
+    """
+    Prédiction avec le modèle multimodal (texte + image).
+    
+    Args:
+        model: Modèle Deep Learning Multimodal
+        classes: Liste des noms de classes
+        text: Description textuelle du produit
+        image_source: Chemin ou bytes de l'image
+        tfidf_vectorizer: Vectoriseur TF-IDF pour le texte
+        image_scaler: Scaler pour les features image
+    
+    Returns:
+        (label, score): Classe prédite et score de confiance
+    """
+    # 1. Extraction des features textuelles
+    text_clean = clean_text(text)
+    text_features = tfidf_vectorizer.transform([text_clean])
+    text_features_dense = text_features.toarray()
+    
+    # 2. Extraction des features visuelles
+    image_features = extract_image_features(image_source, image_scaler)
+    
+    # 3. Prédiction avec le modèle multimodal
+    preds = model.predict([text_features_dense, image_features], verbose=0)[0]
+    
+    # 4. Extraction de la classe avec la plus haute probabilité
     idx = int(np.argmax(preds))
     score = float(preds[idx])
     label = classes[idx]
+    
     return label, score
 
 
-def cmd_predict(image_path: str) -> None:
-    model, label_info = load_model_and_labels()
+def cmd_predict(image_path: str, text: str = None) -> None:
+    """
+    Prédiction CLI sur une image avec description optionnelle.
+    
+    Args:
+        image_path: Chemin vers l'image
+        text: Description textuelle du produit (optionnel, sinon utilise le nom du fichier)
+    """
+    # Chargement des modèles et préprocesseurs
+    model, label_info, tfidf_vec, img_scaler = load_model_and_preprocessors()
     classes = label_info['classes']
-    label, score = predict_image(model, classes, image_path)
-    print(json.dumps({'image_path': image_path, 'predicted_label': label, 'score': round(score, 6)}, indent=2))
+    
+    # Si pas de texte fourni, utiliser le nom du fichier comme proxy
+    if text is None:
+        text = Path(image_path).stem.replace('_', ' ').replace('-', ' ')
+        print(f'⚠️ Pas de description fournie, utilisation du nom de fichier: "{text}"')
+    
+    # Prédiction multimodale
+    label, score = predict_multimodal(model, classes, text, image_path, tfidf_vec, img_scaler)
+    
+    result = {
+        'image_path': image_path,
+        'text_input': text,
+        'predicted_label': label,
+        'confidence_score': round(score, 6),
+        'model': 'Deep Learning Multimodal (94.4% accuracy)'
+    }
+    
+    print(json.dumps(result, indent=2))
 
 
 def cmd_predict_sample(num: int = 50, seed: int = 42) -> None:
-    import pandas as pd
+    """
+    Génère predictions.csv sur un échantillon du dataset Flipkart.
+    
+    Args:
+        num: Nombre d'échantillons à prédire
+        seed: Graine aléatoire pour reproductibilité
+    """
     if not CSV_PATH.exists():
         raise FileNotFoundError(f"CSV not found at {CSV_PATH}")
+    
+    # Chargement du dataset
+    print(f'📊 Chargement du dataset depuis {CSV_PATH.name}...')
     df = pd.read_csv(CSV_PATH)
+    
+    # Préparation des chemins d'images et textes
     df['image_path'] = df['image'].apply(lambda x: str(IMAGES_DIR / x) if isinstance(x, str) else None)
+    df['text'] = (df['product_name'].fillna('') + ' ' + df['description'].fillna('')).astype(str)
+    
+    # Filtrage des images existantes
     df = df[df['image_path'].apply(lambda p: isinstance(p, str) and os.path.exists(p))]
     if len(df) == 0:
         raise RuntimeError('No images found in dataset directory.')
+    
+    # Échantillonnage
     df = df.sample(n=min(num, len(df)), random_state=seed).reset_index(drop=True)
+    print(f'📦 {len(df)} produits sélectionnés pour prédiction')
 
-    model, label_info = load_model_and_labels()
+    # Chargement du modèle multimodal
+    model, label_info, tfidf_vec, img_scaler = load_model_and_preprocessors()
     classes = label_info['classes']
 
+    # Prédictions sur tous les échantillons
+    print(f'🔮 Prédictions en cours...')
     rows = []
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         img_path = row['image_path']
-        label, score = predict_image(model, classes, img_path)
-        rows.append({'image_path': img_path, 'predicted_label': label, 'score': score})
+        text = row['text']
+        
+        try:
+            label, score = predict_multimodal(model, classes, text, img_path, tfidf_vec, img_scaler)
+            rows.append({
+                'image_path': img_path,
+                'product_name': row.get('product_name', ''),
+                'description': row.get('description', '')[:100] + '...' if len(row.get('description', '')) > 100 else row.get('description', ''),
+                'predicted_label': label,
+                'confidence_score': round(score, 4)
+            })
+        except Exception as e:
+            print(f'⚠️ Erreur sur {img_path}: {e}')
+            continue
+        
+        # Progression
+        if (idx + 1) % 10 == 0:
+            print(f'  Traité {idx + 1}/{len(df)} produits...')
 
+    # Sauvegarde des résultats
     out_df = pd.DataFrame(rows)
     out_df.to_csv(PREDICTIONS_CSV, index=False)
-    print(f'Wrote {len(out_df)} predictions to {PREDICTIONS_CSV}')
+    print(f'✅ {len(out_df)} prédictions sauvegardées dans {PREDICTIONS_CSV}')
+    
+    # Statistiques
+    print(f'\n📈 Distribution des prédictions:')
+    for label, count in out_df['predicted_label'].value_counts().items():
+        print(f'  {label}: {count}')
 
 
 def build_app() -> 'FastAPI':
+    """
+    Construit l'application FastAPI avec le modèle multimodal.
+    
+    Returns:
+        Application FastAPI configurée
+    """
     if not HAVE_FASTAPI:
         raise RuntimeError('FastAPI not installed. Install with: pip install fastapi uvicorn')
-    app = FastAPI(title='Place de Marché — Product Classifier API', version='1.0.0')
+    
+    from fastapi import Form
+    
+    app = FastAPI(
+        title='Place de Marché — Product Classifier API',
+        description='API de classification multimodale (texte + image) avec Deep Learning (94.4% accuracy)',
+        version='2.0.0'
+    )
+    
     app.add_middleware(
         CORSMiddleware,
         allow_origins=['*'],
@@ -145,18 +369,82 @@ def build_app() -> 'FastAPI':
         allow_headers=['*'],
     )
 
-    model, label_info = load_model_and_labels()
+    # Chargement unique du modèle au démarrage
+    print('🚀 Démarrage de l\'API...')
+    model, label_info, tfidf_vec, img_scaler = load_model_and_preprocessors()
     classes = label_info['classes']
+    print(f'✅ API prête avec {len(classes)} classes')
+
+    @app.get('/')
+    def root():
+        """Page d'accueil de l'API"""
+        return {
+            'name': 'Place de Marché Product Classifier',
+            'version': '2.0.0',
+            'model': 'Deep Learning Multimodal',
+            'accuracy': '94.4%',
+            'endpoints': {
+                'GET /health': 'Vérifier l\'état de l\'API',
+                'POST /predict': 'Classifier un produit (texte + image)',
+                'GET /classes': 'Lister les classes disponibles',
+                'GET /docs': 'Documentation Swagger UI'
+            }
+        }
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'num_classes': len(classes)}
+        """Endpoint de santé pour monitoring"""
+        return {
+            'status': 'ok',
+            'model': 'Deep Learning Multimodal',
+            'num_classes': len(classes),
+            'classes': classes
+        }
+    
+    @app.get('/classes')
+    def get_classes():
+        """Liste les classes disponibles"""
+        return {
+            'num_classes': len(classes),
+            'classes': classes
+        }
 
     @app.post('/predict')
-    async def predict(file: UploadFile = File(...)):
-        data = await file.read()
-        label, score = predict_image(model, classes, data)
-        return {'predicted_label': label, 'score': score}
+    async def predict(
+        file: UploadFile = File(..., description='Image du produit'),
+        text: str = Form(..., description='Description textuelle du produit (nom + description)')
+    ):
+        """
+        Endpoint de prédiction multimodale.
+        
+        Args:
+            file: Image du produit (JPEG, PNG, etc.)
+            text: Description textuelle (nom + description du produit)
+        
+        Returns:
+            predicted_label: Catégorie prédite
+            confidence_score: Score de confiance (0-1)
+            model: Nom du modèle utilisé
+        """
+        try:
+            # Lecture de l'image uploadée
+            image_data = await file.read()
+            
+            # Prédiction multimodale
+            label, score = predict_multimodal(
+                model, classes, text, image_data, tfidf_vec, img_scaler
+            )
+            
+            return {
+                'predicted_label': label,
+                'confidence_score': round(score, 6),
+                'text_input': text[:100] + '...' if len(text) > 100 else text,
+                'model': 'Deep Learning Multimodal (94.4% accuracy)'
+            }
+        
+        except Exception as e:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f'Erreur de prédiction: {str(e)}')
 
     return app
 
@@ -169,25 +457,48 @@ def cmd_serve(host: str = '0.0.0.0', port: int = 8000) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='P6 API and CLI')
+    parser = argparse.ArgumentParser(
+        description='P6 API et CLI - Classification multimodale de produits (94.4% accuracy)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Exemples d'utilisation:
+  # Démarrer l'API
+  python script.py serve --host 0.0.0.0 --port 8000
+  
+  # Prédire sur une image avec description
+  python script.py predict --image laptop.jpg --text "Dell Laptop 15 inch screen"
+  
+  # Prédire sur une image sans description (utilise le nom du fichier)
+  python script.py predict --image laptop.jpg
+  
+  # Générer predictions.csv sur 100 échantillons
+  python script.py predict-sample --num 100 --seed 42
+        """
+    )
     sub = parser.add_subparsers(dest='cmd', required=True)
 
-    p_srv = sub.add_parser('serve', help='Run FastAPI server')
-    p_srv.add_argument('--host', default='0.0.0.0')
-    p_srv.add_argument('--port', type=int, default=8000)
+    # Commande: serve
+    p_srv = sub.add_parser('serve', help='Démarrer le serveur FastAPI')
+    p_srv.add_argument('--host', default='0.0.0.0', help='Adresse IP (défaut: 0.0.0.0)')
+    p_srv.add_argument('--port', type=int, default=8000, help='Port (défaut: 8000)')
 
-    p_pred = sub.add_parser('predict', help='Predict on one image (CLI)')
-    p_pred.add_argument('--image', required=True, help='Path to image file')
+    # Commande: predict
+    p_pred = sub.add_parser('predict', help='Prédire la catégorie d\'un produit')
+    p_pred.add_argument('--image', required=True, help='Chemin vers l\'image du produit')
+    p_pred.add_argument('--text', default=None, help='Description textuelle du produit (optionnel)')
 
-    p_batch = sub.add_parser('predict-sample', help='Generate predictions.csv on dataset sample')
-    p_batch.add_argument('--num', type=int, default=50, help='Number of images to sample')
-    p_batch.add_argument('--seed', type=int, default=42)
+    # Commande: predict-sample
+    p_batch = sub.add_parser('predict-sample', help='Générer predictions.csv sur échantillon du dataset')
+    p_batch.add_argument('--num', type=int, default=50, help='Nombre d\'échantillons (défaut: 50)')
+    p_batch.add_argument('--seed', type=int, default=42, help='Graine aléatoire (défaut: 42)')
 
     args = parser.parse_args()
+    
+    # Dispatch des commandes
     if args.cmd == 'serve':
         cmd_serve(host=args.host, port=args.port)
     elif args.cmd == 'predict':
-        cmd_predict(args.image)
+        cmd_predict(image_path=args.image, text=args.text)
     elif args.cmd == 'predict-sample':
         cmd_predict_sample(num=args.num, seed=args.seed)
     else:

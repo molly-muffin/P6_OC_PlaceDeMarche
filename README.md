@@ -43,7 +43,7 @@ Ce projet a été réalisé dans le cadre du parcours AI Engineer d'OpenClassroo
 ## Environnement (recommandé macOS Apple Silicon)
 Activer le venv Python 3.10 du projet et installer les dépendances:
 ```bash
-source /Users/laureendademeule/Documents/Projets/P6/p6_env_py310/bin/activate
+source p6_env_py310/bin/activate
 python -m pip install --upgrade pip
 # Apple Silicon (accélération Metal)
 python -m pip install fastapi uvicorn pillow numpy pandas scikit-learn tensorflow-macos tensorflow-metal requests
